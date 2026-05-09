@@ -1,0 +1,25 @@
+[package]
+name = "llmfleet"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+authors = ["MukundaKatta"]
+description = "Fleet-level batch dispatcher for LLM APIs. Pool requests across tasks, route to provider Batch APIs, save 50% on cost without rewriting your agent loops."
+license = "MIT"
+repository = "https://github.com/MukundaKatta/llmfleet-rs"
+homepage = "https://github.com/MukundaKatta/llmfleet-rs"
+documentation = "https://docs.rs/llmfleet"
+readme = "README.md"
+keywords = ["llm", "anthropic", "batch", "dispatcher", "tokio"]
+categories = ["asynchronous", "api-bindings"]
+
+[dependencies]
+async-trait = "0.1"
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "test-util"] }
+tokio-test = "0.4"
