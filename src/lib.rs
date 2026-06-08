@@ -48,6 +48,4 @@ mod backend;
 mod dispatcher;
 
 pub use crate::backend::{Backend, BackendError};
-pub use crate::dispatcher::{
-    DispatchStats, FleetDispatcher, RoutingPolicy, SubmitBuilder,
-};
+pub use crate::dispatcher::{DispatchStats, FleetDispatcher, RoutingPolicy, SubmitBuilder};

@@ -90,22 +90,18 @@ impl<B: Backend> FleetDispatcher<B> {
         let (tx, rx) = mpsc::unbounded_channel::<Msg>();
         let stats = Arc::new(DispatchStats::default());
         let backend = Arc::new(backend);
-        let dispatcher = Arc::new(Self {
-            backend: backend.clone(),
+
+        // Spawn the flusher and store its handle synchronously, so a `shutdown`
+        // racing right after `new` always has the handle available to await.
+        let task = tokio::spawn(flush_loop(backend.clone(), rx, policy, stats.clone()));
+
+        Arc::new(Self {
+            backend,
             policy,
-            stats: stats.clone(),
+            stats,
             queue_tx: tx,
-            flusher: Mutex::new(None),
-        });
-
-        let task = tokio::spawn(flush_loop(backend, rx, policy, stats));
-        // Stash the JoinHandle so shutdown can await it.
-        let dispatcher_clone = dispatcher.clone();
-        tokio::spawn(async move {
-            *dispatcher_clone.flusher.lock().await = Some(task);
-        });
-
-        dispatcher
+            flusher: Mutex::new(Some(task)),
+        })
     }
 
     /// Begin a submission. Use the builder to set latency budget / forcing.
@@ -212,7 +208,9 @@ async fn flush_loop<B: Backend>(
         let mut shutdown_seen = false;
 
         // Fill the batch up to max size or until window expires / shutdown.
-        while batch.len() < policy.batch_max_size {
+        // Flush early once we have at least `batch_min_size` items so callers
+        // get their results without waiting out the whole window.
+        while batch.len() < policy.batch_max_size && batch.len() < policy.batch_min_size {
             let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
             if timeout.is_zero() {
                 break;
@@ -224,9 +222,6 @@ async fn flush_loop<B: Backend>(
                     break;
                 }
                 Err(_) => break, // window timeout
-            }
-            if batch.len() >= policy.batch_min_size && batch.len() >= policy.batch_max_size {
-                break;
             }
         }
 
@@ -253,9 +248,7 @@ async fn flush_loop<B: Backend>(
                 stats.errors.fetch_add(1, Ordering::Relaxed);
                 let msg = e.to_string();
                 for p in batch {
-                    let _ = p
-                        .tx
-                        .send(Err(BackendError::Provider(msg.clone())));
+                    let _ = p.tx.send(Err(BackendError::Provider(msg.clone())));
                 }
             }
         }
@@ -268,7 +261,8 @@ async fn flush_loop<B: Backend>(
     // Drain anything left after shutdown signal.
     while let Ok(msg) = rx.try_recv() {
         if let Msg::Item(p) = msg {
-            let _ = p.tx.send(Err(BackendError::Other("dispatcher shutdown".into())));
+            let _ =
+                p.tx.send(Err(BackendError::Other("dispatcher shutdown".into())));
         }
     }
 }

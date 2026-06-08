@@ -3,7 +3,6 @@ use llmfleet::{Backend, BackendError, FleetDispatcher, RoutingPolicy};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -35,16 +34,12 @@ impl Backend for EchoBackend {
 #[tokio::test]
 async fn sync_routing_for_tight_latency() {
     let backend = EchoBackend::default();
-    let bref: &EchoBackend = &backend;
-    // We need to pass ownership; reconstruct a fresh one and check via stats.
-    let backend = EchoBackend::default();
     let policy = RoutingPolicy {
         sync_max_latency_ms: 5_000,
         batch_window: Duration::from_millis(50),
         batch_min_size: 1,
         batch_max_size: 100,
     };
-    let _ = bref; // silence unused
     let fleet = FleetDispatcher::new(backend, policy);
     let r = fleet
         .submit(json!({"k": "v"}))
@@ -129,8 +124,40 @@ async fn concurrent_submissions_pool_into_one_batch() {
     r3.unwrap();
 
     let (_, batched, batches, _) = fleet.stats.snapshot();
-    assert_eq!(batches, 1, "three concurrent submits should pool into one batch");
+    assert_eq!(
+        batches, 1,
+        "three concurrent submits should pool into one batch"
+    );
     assert_eq!(batched, 3);
+    fleet.shutdown().await;
+}
+
+#[tokio::test]
+async fn reaching_min_size_flushes_before_window_expires() {
+    // With a long window but min_size = 2, two concurrent submits should flush
+    // as soon as the second arrives, well before the window elapses.
+    let backend = EchoBackend::default();
+    let policy = RoutingPolicy {
+        sync_max_latency_ms: 0, // never sync
+        batch_window: Duration::from_secs(30),
+        batch_min_size: 2,
+        batch_max_size: 100,
+    };
+    let fleet = FleetDispatcher::new(backend, policy);
+
+    let f1 = fleet.submit(json!({"i": 1})).send();
+    let f2 = fleet.submit(json!({"i": 2})).send();
+    // If min_size early-flush works, this resolves quickly; otherwise it would
+    // block ~30s and trip the timeout below.
+    let joined = tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(f1, f2) })
+        .await
+        .expect("submits should flush at min_size, not wait out the window");
+    joined.0.unwrap();
+    joined.1.unwrap();
+
+    let (_, batched, batches, _) = fleet.stats.snapshot();
+    assert_eq!(batches, 1);
+    assert_eq!(batched, 2);
     fleet.shutdown().await;
 }
 
